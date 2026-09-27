@@ -22,6 +22,7 @@ const ICON = {
   users:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 010 6.8M18.5 14.8c1.6.8 2.6 2.6 3 5.2"/></svg>',
   racket:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="14.5" cy="9.5" rx="6" ry="6.5" transform="rotate(40 14.5 9.5)"/><path d="M10 14l-6.5 6.5"/><circle cx="5" cy="5" r="1.8"/></svg>',
   medal:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3l3 6M17 3l-3 6"/><circle cx="12" cy="15" r="6"/><path d="M12 12.5v5"/></svg>',
+  download:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>',
   trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
 };
 
@@ -132,18 +133,87 @@ function buildMatches(ids, mode){
   return {ms,dropped};
 }
 function scheduleRounds(ms, courts, ids){
-  const rest={}; ids.forEach(i=>rest[i]=0);
+  const rest={}, cnt={}; ids.forEach(i=>{rest[i]=0; cnt[i]=0;});
   let remaining=ms.map((m,i)=>({...m,_i:i})); const out=[]; let r=0;
+  const load=m=>[...m.a,...m.b].reduce((s,p)=>s+cnt[p],0), rested=m=>[...m.a,...m.b].reduce((s,p)=>s+rest[p],0);
   while(remaining.length){
-    // prefer matches whose players rested longest, then original order
-    remaining.sort((x,y)=>{ const sx=[...x.a,...x.b].reduce((s,p)=>s+rest[p],0), sy=[...y.a,...y.b].reduce((s,p)=>s+rest[p],0); return (sy-sx)||(x._i-y._i); });
     const used=new Set(); const pick=[];
-    for(const m of remaining){ if(pick.length>=courts) break; const ps=[...m.a,...m.b]; if(ps.some(p=>used.has(p))) continue; ps.forEach(p=>used.add(p)); pick.push(m); }
+    while(pick.length<courts){
+      // utamakan match berisi pemain yang paling sedikit main, lalu yang paling lama istirahat
+      let best=null;
+      for(const m of remaining){ if(pick.includes(m)) continue; const ps=[...m.a,...m.b]; if(ps.some(p=>used.has(p))) continue;
+        const key=[load(m), -rested(m), m._i]; if(!best||key[0]<best.k[0]||(key[0]===best.k[0]&&(key[1]<best.k[1]||(key[1]===best.k[1]&&key[2]<best.k[2])))) best={m,k:key}; }
+      if(!best) break;
+      [...best.m.a,...best.m.b].forEach(p=>used.add(p)); pick.push(best.m);
+    }
     remaining=remaining.filter(m=>!pick.includes(m));
-    ids.forEach(i=>rest[i]= used.has(i)?0:rest[i]+1);
+    ids.forEach(i=>{ rest[i]=used.has(i)?0:rest[i]+1; if(used.has(i)) cnt[i]++; });
     pick.forEach((m,c)=>out.push({id:'', r, c:c+1, a:m.a, b:m.b}));
     r++;
   }
+  return out;
+}
+const gcd=(a,b)=>b?gcd(b,a%b):a;
+// target 1 putaran penuh: tiap pemain idealnya berpasangan dengan semua pemain lain,
+// dibulatkan ke atas ke jumlah match yang membuat semua pemain main sama banyak.
+function fullRoundMatches(n){ const base=Math.ceil(n*(n-1)/4); const step=n/gcd(n,4); return Math.ceil(base/step)*step; }
+// Pengacak adil: pilih pemain yang paling sedikit main, lalu paling lama istirahat,
+// lalu bagi tim dengan menghindari pasangan/lawan yang berulang.
+function greedySchedule(ids, M, courts, size){
+  const cnt={}, last={}, pc={}, oc={}; ids.forEach(i=>{cnt[i]=0; last[i]=-1;});
+  const k=(a,b)=>a<b?a+'|'+b:b+'|'+a, g=(o,a,b)=>o[k(a,b)]||0, inc=(o,a,b)=>{o[k(a,b)]=(o[k(a,b)]||0)+1;};
+  const combos=(arr,r)=>{ const out=[]; const f=(st,acc)=>{ if(acc.length===r){out.push(acc);return;} for(let i=st;i<arr.length;i++) f(i+1,[...acc,arr[i]]); }; f(0,[]); return out; };
+  const splits=q=>size===2?[[[q[0]],[q[1]]]]:[[[q[0],q[1]],[q[2],q[3]]],[[q[0],q[2]],[q[1],q[3]]],[[q[0],q[3]],[q[1],q[2]]]];
+  const out=[]; let made=0, r=0;
+  while(made<M){
+    const used=new Set(); const per=Math.min(courts, M-made);
+    for(let c=0;c<per;c++){
+      const pool=shuffle(ids.filter(i=>!used.has(i))).sort((a,b)=>(cnt[a]-cnt[b])||(last[a]-last[b])).slice(0,size===2?10:9);
+      let best=null;
+      for(const q of combos(pool,size)){
+        const load=q.reduce((s2,i)=>s2+cnt[i],0), rest=q.reduce((s2,i)=>s2+last[i],0);
+        for(const [A,Bt] of splits(q)){
+          const partner=size===2?0:g(pc,A[0],A[1])+g(pc,Bt[0],Bt[1]);
+          const opp=A.reduce((s2,a)=>s2+Bt.reduce((t2,b)=>t2+g(oc,a,b),0),0);
+          const score=load*1e6 + partner*1e4 + opp*100 + rest + Math.random();
+          if(!best||score<best.score) best={score,A,B:Bt};
+        }
+      }
+      const {A,B:Bt}=best; [...A,...Bt].forEach(i=>{cnt[i]++; last[i]=r; used.add(i);});
+      if(size===4){ inc(pc,A[0],A[1]); inc(pc,Bt[0],Bt[1]); }
+      A.forEach(a=>Bt.forEach(b=>inc(oc,a,b)));
+      out.push({id:'',r,c:c+1,a:A,b:Bt}); made++;
+    }
+    r++;
+  }
+  return out;
+}
+function rateSchedule(sch, ids, mode){
+  const cnt={}; ids.forEach(i=>cnt[i]=0); let maxGap=0; const R=sch.reduce((x,m)=>Math.max(x,m.r+1),0);
+  const pairs={}, key=(a,b)=>a<b?a+'|'+b:b+'|'+a;
+  for(let r=0;r<R;r++){ sch.filter(m=>m.r===r).forEach(m=>{ [...m.a,...m.b].forEach(p=>cnt[p]++);
+      const pr = mode==='single' ? [[m.a[0],m.b[0]]] : [m.a,m.b];
+      pr.forEach(([x,y])=>{ const kk=key(x,y); pairs[kk]=(pairs[kk]||0)+1; }); });
+    const v=Object.values(cnt); maxGap=Math.max(maxGap, Math.max(...v)-Math.min(...v)); }
+  const n=ids.length, missing=n*(n-1)/2-Object.keys(pairs).length;
+  const repeats=Object.values(pairs).reduce((s2,x)=>s2+(x-1),0);
+  return [maxGap>1?1:0, missing, repeats, maxGap, R];
+}
+function makeSchedule(ids, mode, courts){
+  const n=ids.length, size=mode==='single'?2:4, cands=[];
+  if(mode==='single' || n%4===0 || n%4===1){ const {ms}=buildMatches(ids,mode); cands.push(scheduleRounds(ms,courts,ids)); }
+  const M = mode==='single' ? n*(n-1)/2 : fullRoundMatches(n);
+  const tries = n>14 ? 15 : 40;
+  for(let i=0;i<tries;i++) cands.push(greedySchedule(shuffle(ids), M, courts, size));
+  let best=null;
+  const less=(x,y)=>{ for(let i=0;i<x.length;i++){ if(x[i]!==y[i]) return x[i]<y[i]; } return false; };
+  for(const c of cands){ const k=rateSchedule(c,ids,mode); if(!best||less(k,best.k)) best={c,k}; }
+  return best.c;
+}
+// round-round di mana semua pemain sudah main sama banyak (titik aman untuk berhenti)
+function balancedRounds(t){
+  const ids=t.players.map(p=>p.id); const cnt={}; ids.forEach(i=>cnt[i]=0); const out=new Set();
+  roundsOf(t).forEach((r,i)=>{ r.forEach(m=>[...m.a,...m.b].forEach(p=>{ if(p in cnt) cnt[p]++; })); const v=Object.values(cnt); if(v.length && Math.min(...v)>0 && Math.min(...v)===Math.max(...v)) out.add(i); });
   return out;
 }
 async function generate(){
@@ -152,15 +222,15 @@ async function generate(){
   const hasScores=Object.keys(S.scores).length>0;
   if(t.matches && t.matches.length && !confirm(hasScores?'Jadwal baru akan menghapus semua skor yang sudah diisi. Lanjutkan?':'Buat ulang jadwal dengan pasangan acak baru?')) return;
   const courts=Math.max(1,Math.min(Number(t.courts)||1, Math.floor(ids.length/need)));
-  const {ms,dropped}=buildMatches(ids,t.mode);
   const gen=(t.gen||0)+1;
-  const sched=scheduleRounds(ms,courts,ids).map((m,i)=>({...m,id:'g'+gen+'m'+(i+1)}));
+  const sched=makeSchedule(ids,t.mode,courts).map((m,i)=>({...m,id:'g'+gen+'m'+(i+1)}));
   const oldIds=Object.keys(S.scores);
   t.gen=gen; t.matches=sched; t.scheduledPlayers=ids.slice().sort().join(',');
   S.round=0; S.tab='matches'; S.editMatch=null;
   const w=saveT(); render(); await w;
   oldIds.forEach(mid=>enqueue('s/'+t.id+'/'+mid, ()=>B.delS(t.id,mid)));
-  toast(sched.length+' match dibuat'+(dropped?' ('+dropped+' pasangan tidak bisa dijadwalkan)':'')+'.');
+  const rounds=sched.reduce((x,m)=>Math.max(x,m.r+1),0);
+  toast(sched.length+' match dalam '+rounds+' round dibuat.');
 }
 
 // ---------- derived ----------
@@ -171,17 +241,27 @@ function roundsOf(t){ const m=t.matches||[]; const n=m.reduce((x,y)=>Math.max(x,
 function firstOpenRound(){ const t=S.t; if(!t||!t.matches) return 0; const rs=roundsOf(t); const i=rs.findIndex(r=>r.some(m=>!isDone(m.id))); return i<0?Math.max(0,rs.length-1):i; }
 function standings(){
   const t=S.t; const st={};
-  t.players.forEach(p=>st[p.id]={id:p.id,name:p.name||'Tanpa nama',g:p.g,W:0,L:0,T:0,diff:0,gf:0,pts:0,mp:0,hist:[]});
+  t.players.forEach(p=>st[p.id]={id:p.id,name:p.name||'Tanpa nama',g:p.g,W:0,L:0,T:0,diff:0,gf:0,ga:0,mp:0,hist:[],mates:{},opps:{}});
   (t.matches||[]).forEach(m=>{
     if(!isDone(m.id)) return; const s=scoreOf(m.id);
-    const side=(ids,own,opp,oppIds)=>ids.forEach(id=>{ const r=st[id]; if(!r) return; r.mp++; r.gf+=own; r.diff+=own-opp;
-      const res=own>opp?'W':own<opp?'L':'T'; r[res]++; r.pts+= res==='W'?2:res==='L'?-2:0;
-      r.hist.push({m,res,own,opp,partners:ids.filter(x=>x!==id),opps:oppIds}); });
+    const side=(ids,own,opp,oppIds)=>ids.forEach(id=>{ const r=st[id]; if(!r) return;
+      r.mp++; r.gf+=own; r.ga+=opp; r.diff+=own-opp;
+      const res=own>opp?'W':own<opp?'L':'T'; r[res]++;
+      const partners=ids.filter(x=>x!==id);
+      const add=(bag,pid)=>{ const o=bag[pid]=bag[pid]||{id:pid,n:0,W:0,L:0,T:0,diff:0}; o.n++; o[res]++; o.diff+=own-opp; };
+      partners.forEach(pid=>add(r.mates,pid)); oppIds.forEach(pid=>add(r.opps,pid));
+      r.hist.push({m,res,own,opp,partners,opps:oppIds}); });
     side(m.a,s.sa,s.sb,m.b); side(m.b,s.sb,s.sa,m.a);
   });
-  return Object.values(st).sort((a,b)=>(b.pts-a.pts)||(b.diff-a.diff)||(b.gf-a.gf)||a.name.localeCompare(b.name));
+  const rows=Object.values(st); const maxMp=rows.reduce((x,r)=>Math.max(x,r.mp),0);
+  rows.forEach(r=>{
+    r.V=maxMp-r.mp;                       // virtual win penyeimbang jumlah main
+    r.wins=r.W+r.V;
+    r.avg=r.mp?r.gf/r.mp:0;
+    r.pts=r.wins*4 + r.T*2 + r.L*1 + r.avg*0.2;
+  });
+  return rows.sort((a,b)=>(b.pts-a.pts)||(b.wins-a.wins)||(b.diff-a.diff)||a.name.localeCompare(b.name));
 }
-
 // ---------- render ----------
 function header(title, back){
   const sync = Store.mode==='shared' ? '<span class="sync" title="Tersinkron untuk semua yang membuka link"><i></i>Live</span>' : '<span class="sync local" title="Data hanya di perangkat ini"><i></i>Lokal</span>';
@@ -291,10 +371,14 @@ function renderMatches(){
   }
   const cur=rs[S.round]; const playing=new Set(cur.flatMap(m=>[...m.a,...m.b]));
   const bench=t.players.filter(p=>!playing.has(p.id));
-  const dots=rs.map((r,i)=>`<span class="dot ${r.every(m=>isDone(m.id))?'done':''} ${i===S.round?'cur':''}"></span>`).join('');
+  const bal=balancedRounds(t);
+  const dots=rs.map((r,i)=>`<span class="dot ${r.every(m=>isDone(m.id))?'done':''} ${i===S.round?'cur':''} ${bal.has(i)?'bal':''}"></span>`).join('');
+  const nextBal=[...bal].find(i=>i>=S.round);
+  const balNote = bal.has(S.round) ? '✓ Setelah round ini, semua pemain sudah main sama banyak'
+    : nextBal!==undefined ? 'Jumlah main semua pemain seimbang lagi di round '+(nextBal+1) : 'Jumlah main pemain di jadwal ini tidak seimbang';
   return chips + `<div class="roundnav">
       <button class="btn" data-rnd="-1" ${S.round===0?'disabled':''} aria-label="Round sebelumnya">${ICON.back}</button>
-      <div class="roundtitle"><b>Round ${S.round+1}/${rs.length}</b><div class="dots" aria-hidden="true">${dots}</div></div>
+      <div class="roundtitle"><b>Round ${S.round+1}/${rs.length}</b><div class="dots" aria-hidden="true">${dots}</div><div class="balnote ${bal.has(S.round)?'ok':''}">${balNote}</div></div>
       <button class="btn" data-rnd="1" ${S.round>=rs.length-1?'disabled':''} aria-label="Round berikutnya">${ICON.next}</button></div>
     ${cur.map(m=>matchCard(m, ms.indexOf(m)+1)).join('')}
     ${bench.length?`<section class="bench"><h3>Tidak main di round ini (${bench.length})</h3><div class="names">${bench.map(p=>`<span class="pill">${esc(p.name||'Tanpa nama')}</span>`).join('')}</div></section>`:''}`;
@@ -309,26 +393,51 @@ function renderRanking(){
       <strong>${anyPlayed?esc(top.name):'Belum ada skor'}</strong>
       <div class="meta">${done}/${ms.length} match selesai · ${esc(fmtDate(t.date))}</div></section>
     <div class="table-wrap"><table>
-      <thead><tr><th>#</th><th>Pemain</th><th>M</th><th>W-L-T</th><th>Selisih</th><th>Poin</th></tr></thead>
-      <tbody>${st.map((r,i)=>`<tr class="${i===0&&anyPlayed?'first':''}"><td>${i+1}</td>
-        <td><button class="pname" data-player="${esc(r.id)}">${esc(r.name)}</button></td>
-        <td class="num">${r.mp}</td><td class="num">${r.W}-${r.L}-${r.T}</td>
+      <thead><tr><th>#</th><th>Pemain</th><th>W-L-T</th><th>Diff</th><th>Poin</th></tr></thead>
+      <tbody>${st.map((r,i)=>`<tr class="${i===0&&anyPlayed?'first':''}"><td>${i===0&&anyPlayed?'🏅':i+1}</td>
+        <td><button class="pname" data-player="${esc(r.id)}">${esc(r.name)}</button>${r.V&&anyPlayed?` <span class="virt" title="${r.V} virtual win">⭐ +${r.V}</span>`:''}</td>
+        <td class="num">${r.W}-${r.L}-${r.T}</td>
         <td class="num ${r.diff>0?'pos':r.diff<0?'neg':''}">${sign(r.diff)}</td>
-        <td class="pts ${r.pts<0?'neg':''}">${sign(r.pts)}</td></tr>`).join('')}</tbody></table></div>
-    <p class="legend">Menang +2, kalah −2, seri 0. Urutan: poin, lalu selisih skor, lalu total skor. Ketuk nama pemain untuk lihat riwayat match.</p>
+        <td class="pts">${Math.round(r.pts)}</td></tr>`).join('')}</tbody></table></div>
+    <details class="notes" open><summary>Catatan perhitungan</summary><ul>
+      <li>Diff = selisih skor (skor didapat − skor kemasukan).</li>
+      <li>W-L-T = Menang-Kalah-Seri (contoh 3-0-0 = 3 menang, 0 kalah, 0 seri).</li>
+      <li>Poin = (menang × 4) + (seri × 2) + (kalah × 1) + ((total skor ÷ jumlah main) × 0,2), ditampilkan dibulatkan.</li>
+      <li>⭐ = virtual win untuk menyeimbangkan pemain yang main lebih sedikit dari pemain terbanyak.</li>
+      <li>Urutan: poin, lalu jumlah menang (termasuk virtual), lalu Diff.</li>
+      <li>Virtual win tidak menambah Diff.</li>
+      <li>Ketuk nama pemain untuk melihat analitiknya.</li></ul></details>
     <button class="btn primary block" style="margin-top:14px;padding:14px" data-act="share">Bagikan hasil</button>`;
+}
+function playerPage(r){
+  const sign=v=>v>0?'+'+v:String(v);
+  const rate=r.mp?Math.round(r.W/r.mp*100):0;
+  const pl=(n,one,many)=>n+' '+(n===1?one:many);
+  const mates=Object.values(r.mates).sort((a,b)=>(b.W-a.W)||(b.diff-a.diff)||(b.n-a.n));
+  const opps=Object.values(r.opps).sort((a,b)=>(b.L-a.L)||(a.diff-b.diff)||(b.n-a.n));
+  const dcls=v=>v>0?'pos':v<0?'neg':'';
+  const item=(o,kind)=>`<div class="pa-item"><b>${esc(pname(o.id))}</b><span>${pl(o.n,'match','matches')} · ${kind==='mate'?pl(o.W,'win','wins'):pl(o.L,'loss','losses')} · <em class="${dcls(o.diff)}">${sign(o.diff)} Diff</em></span></div>`;
+  return `<div class="pa" role="dialog" aria-modal="true" aria-label="Analitik ${esc(r.name)}">
+    <header class="pa-head"><button class="icon-btn" data-close aria-label="Kembali">${ICON.back}</button>
+      <div class="pa-title"><h3>${esc(r.name)}</h3><small>Player Analytics</small></div>
+      <button class="icon-btn" data-act="dlplayer" aria-label="Download analitik">${ICON.download}</button></header>
+    <div class="pa-body" id="pa-capture">
+      <div class="pa-caption">${esc(S.t.name||'')} · ${esc(r.name)}</div>
+      <div class="pa-top"><div><b>${r.W}</b><span>Total Wins</span></div><div><b>${rate}%</b><span>Win Rate</span></div><div><b>${r.diff}</b><span>Point Diff</span></div></div>
+      <section class="pa-card"><h4>Match Status</h4><div class="pa-5">
+        <div><b>${r.mp}</b><span>Played</span></div><div><b class="pos">${r.W}</b><span>Won</span></div><div><b class="neg">${r.L}</b><span>Lost</span></div><div><b class="muted">${r.T}</b><span>Ties</span></div><div><b class="muted">${r.V}</b><span>Virtual</span></div></div></section>
+      <section class="pa-card"><h4>Score Statistics</h4><div class="pa-ss">
+        <div class="pa-ss-h">Total</div><div class="pa-ss-h">Average</div>
+        <div class="pa-2"><div><b class="pos">${r.gf}</b><span>Scored</span></div><div><b class="neg">${r.ga}</b><span>Conceded</span></div></div>
+        <div class="pa-2"><div><b class="pos">${r.mp?(r.gf/r.mp).toFixed(1):'0'}</b><span>per Match</span></div><div><b class="neg">${r.mp?(r.ga/r.mp).toFixed(1):'0'}</b><span>per Match</span></div></div></div></section>
+      ${mates.length?`<section class="pa-card"><h4>Top Teammates</h4>${mates.map(o=>item(o,'mate')).join('')}</section>`:''}
+      <section class="pa-card"><h4>Toughest Opponents</h4>${opps.length?opps.map(o=>item(o,'opp')).join(''):'<p class="muted small">Belum ada match selesai.</p>'}</section>
+      ${r.hist.length?`<section class="pa-card"><h4>Match History</h4>${r.hist.map(h=>`<div class="hist"><div><div>Round ${h.m.r+1}${h.partners.length?' · bareng '+esc(h.partners.map(pname).join(', ')):''}</div><div class="muted small">vs ${esc(h.opps.map(pname).join(' & '))}</div></div><div class="row"><span class="num" style="font-size:18px;font-weight:700">${h.own}–${h.opp}</span><span class="res ${h.res}">${h.res}</span></div></div>`).join('')}</section>`:''}
+    </div></div>`;
 }
 function renderModal(){
   if(!S.modal) return '';
-  if(S.modal.type==='player'){
-    const r=standings().find(x=>x.id===S.modal.id); if(!r) return '';
-    const sign=v=>v>0?'+'+v:String(v);
-    return `<div class="modal-bg" data-close><div class="modal" role="dialog" aria-modal="true" aria-label="Riwayat ${esc(r.name)}" onclick="event.stopPropagation()">
-      <div class="row"><h3 class="grow">${esc(r.name)}</h3><button class="icon-btn" data-close aria-label="Tutup" style="color:var(--ink)">✕</button></div>
-      <p class="small muted" style="margin:0 0 10px">${r.W}-${r.L}-${r.T} · selisih ${sign(r.diff)} · ${sign(r.pts)} poin · ${r.gf} skor didapat</p>
-      ${r.hist.length? r.hist.map(h=>`<div class="hist"><div><div>Round ${h.m.r+1}${h.partners.length?' · bareng '+esc(h.partners.map(pname).join(', ')):''}</div><div class="muted small">vs ${esc(h.opps.map(pname).join(' & '))}</div></div><div class="row"><span class="num" style="font-size:18px;font-weight:700">${h.own}–${h.opp}</span><span class="res ${h.res}">${h.res}</span></div></div>`).join('') : '<p class="empty">Belum ada match selesai.</p>'}
-    </div></div>`;
-  }
+  if(S.modal.type==='player'){ const r=standings().find(x=>x.id===S.modal.id); return r?playerPage(r):''; }
   if(S.modal.type==='share'){
     return `<div class="modal-bg" data-close><div class="modal" role="dialog" aria-modal="true" aria-label="Bagikan hasil" onclick="event.stopPropagation()">
       <div class="row"><h3 class="grow">Bagikan hasil</h3><button class="icon-btn" data-close aria-label="Tutup" style="color:var(--ink)">✕</button></div>
@@ -342,11 +451,59 @@ function shareText(){
   const t=S.t, st=standings(), ms=t.matches||[], done=ms.filter(m=>isDone(m.id)).length;
   const sign=v=>v>0?'+'+v:String(v);
   let s=`🎾 ${t.name||'Sesi tennis'} (${fmtDate(t.date)})\n${t.mode==='single'?'Single':'Double'} Americano · ${done}/${ms.length} match selesai\n\n`;
-  st.forEach((r,i)=>{ s+=`${i+1}. ${r.name} — ${r.W}-${r.L}-${r.T}, selisih ${sign(r.diff)}, ${sign(r.pts)} poin\n`; });
+  st.forEach((r,i)=>{ s+=`${i+1}. ${r.name}${r.V?' (⭐+'+r.V+')':''} — ${r.W}-${r.L}-${r.T}, diff ${sign(r.diff)}, ${Math.round(r.pts)} poin\n`; });
   return s.trim();
 }
 
+// ---------- confetti ----------
+function confetti(x,y){
+  const cv=document.createElement('canvas'); const dpr=window.devicePixelRatio||1;
+  cv.className='confetti'; cv.width=innerWidth*dpr; cv.height=innerHeight*dpr; document.body.appendChild(cv);
+  const ctx=cv.getContext&&cv.getContext('2d'); if(!ctx){ cv.remove(); return; } ctx.scale(dpr,dpr);
+  const cs=getComputedStyle(document.documentElement);
+  const cols=[cs.getPropertyValue('--ball').trim()||'#D9EE3A','#FFFFFF','#2C7A5B','#F2A93B','#E8505B','#4F8DF7'];
+  const ox=x??innerWidth/2, oy=y??innerHeight/3;
+  const ps=Array.from({length:90},()=>{ const a=Math.random()*Math.PI*2, v=4+Math.random()*7;
+    return {x:ox,y:oy,vx:Math.cos(a)*v,vy:Math.sin(a)*v-4,w:5+Math.random()*6,h:3+Math.random()*4,r:Math.random()*6,vr:(Math.random()-.5)*.4,c:cols[Math.floor(Math.random()*cols.length)],round:Math.random()<.25}; });
+  const t0=performance.now();
+  (function frame(t){
+    const el=t-t0; ctx.clearRect(0,0,innerWidth,innerHeight);
+    ps.forEach(p=>{ p.vy+=.22; p.vx*=.985; p.x+=p.vx; p.y+=p.vy; p.r+=p.vr;
+      ctx.save(); ctx.globalAlpha=Math.max(0,1-el/1800); ctx.translate(p.x,p.y); ctx.rotate(p.r); ctx.fillStyle=p.c;
+      if(p.round){ ctx.beginPath(); ctx.arc(0,0,p.h/1.4,0,Math.PI*2); ctx.fill(); } else ctx.fillRect(-p.w/2,-p.h/2,p.w,p.h);
+      ctx.restore(); });
+    if(el<1800) requestAnimationFrame(frame); else cv.remove();
+  })(t0);
+}
+let h2cLoading=null;
+function loadH2C(){ if(window.html2canvas) return Promise.resolve(); if(h2cLoading) return h2cLoading;
+  h2cLoading=new Promise((res,rej)=>{ const sc=document.createElement('script'); sc.src='https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js'; sc.onload=res; sc.onerror=()=>{h2cLoading=null;rej(new Error('load'));}; document.head.appendChild(sc); });
+  return h2cLoading; }
+async function downloadPlayer(){
+  const node=document.getElementById('pa-capture'); if(!node) return;
+  const r=standings().find(x=>x.id===S.modal.id); const fname=((r&&r.name)||'pemain').replace(/[^\w-]+/g,'_')+'-analytics.png';
+  try{
+    toast('Menyiapkan gambar…'); await loadH2C();
+    node.classList.add('capturing');
+    const bg=getComputedStyle(document.body).backgroundColor;
+    const canvas=await window.html2canvas(node,{backgroundColor:bg,scale:2,useCORS:true});
+    node.classList.remove('capturing');
+    const blob=await new Promise(res=>canvas.toBlob(res,'image/png'));
+    const file=new File([blob],fname,{type:'image/png'});
+    if(navigator.canShare && navigator.canShare({files:[file]})){ try{ await navigator.share({files:[file],title:fname}); return; }catch(e){ if(e&&e.name==='AbortError') return; } }
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=fname; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    toast('Gambar tersimpan.');
+  }catch(e){ node.classList.remove('capturing'); console.error(e); toast('Gagal membuat gambar.'); }
+}
+
 // ---------- events ----------
+// konfeti untuk setiap klik di tab Ranking (tab-nya, nama pemain, tombol, termasuk halaman analitik pemain)
+$app.addEventListener('click', e=>{
+  const el=e.target.closest('button'); if(!el) return;
+  const inRanking = S.tab==='ranking' && S.tid;
+  const fire = el.dataset.tab ? el.dataset.tab==='ranking' : (inRanking && el.dataset.act!=='home');
+  if(fire) setTimeout(()=>confetti(e.clientX||undefined, e.clientY||undefined),0);
+}, true);
 $app.addEventListener('click', async e=>{
   const el=e.target.closest('button,[data-close],[data-open]'); if(!el) return;
   const d=el.dataset;
@@ -376,6 +533,7 @@ $app.addEventListener('click', async e=>{
   if(d.rnd){ S.round+=Number(d.rnd); S.editMatch=null; render(); return; }
   if(d.filter){ S.filter = S.filter===d.filter?null:d.filter; S.editMatch=null; render(); return; }
   if(d.player){ S.modal={type:'player',id:d.player}; render(); return; }
+  if(d.act==='dlplayer'){ downloadPlayer(); return; }
   if(d.live){ const cur=scoreOf(d.live); const obj={...cur, active:!cur.active}; S.scores[d.live]=obj; render(); enqueue('s/'+t.id+'/'+d.live,()=>B.saveS(t.id,d.live,obj)); return; }
   if(d.edit){ const m=t.matches.find(x=>x.id===d.edit); const s=scoreOf(d.edit); S.editMatch=d.edit; S.draft={a:[...m.a],b:[...m.b],sa:s.sa,sb:s.sb}; render(); const inp=document.querySelector('[data-sa]'); if(inp) inp.focus(); return; }
   if(d.cancel!==undefined){ S.editMatch=null; render(); return; }
