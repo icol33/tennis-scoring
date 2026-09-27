@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
 
 
@@ -18,6 +18,12 @@ function toast(msg){ let t=document.querySelector('.toast'); if(!t){t=document.c
 const ICON = {
   back:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
   next:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>',
+  link:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a4.5 4.5 0 006.4 0l3-3a4.5 4.5 0 00-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 00-6.4 0l-3 3a4.5 4.5 0 006.4 6.4l1-1"/></svg>',
+  ext:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5"/></svg>',
+  copy:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3"/></svg>',
+  reset:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 00-14.6-4.5L4 8"/><path d="M4 3v5h5"/><path d="M4 13a8 8 0 0014.6 4.5L20 16"/><path d="M20 21v-5h-5"/></svg>',
+  arrow:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
+  cal:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/></svg>',
   share:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>',
   users:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 010 6.8M18.5 14.8c1.6.8 2.6 2.6 3 5.2"/></svg>',
   racket:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="14.5" cy="9.5" rx="6" ry="6.5" transform="rotate(40 14.5 9.5)"/><path d="M10 14l-6.5 6.5"/><circle cx="5" cy="5" r="1.8"/></svg>',
@@ -50,6 +56,7 @@ const Local = (()=>{
     async saveS(tid,mid,obj){ (data.s[tid]=data.s[tid]||{})[mid]=obj; persist(); },
     async delS(tid,mid){ if(data.s[tid]) delete data.s[tid][mid]; persist(); },
     async delT(id){ delete data.t[id]; delete data.s[id]; persist(); },
+    async getS(id){ return Object.keys(data.s[id]||{}); },
   };
 })();
 // shared backend: Firebase Firestore
@@ -65,6 +72,7 @@ function FirebaseBackend(db){
     saveS(tid,mid,obj){ return setDoc(doc(db,'tournaments',tid,'scores',mid), clean(obj)); },
     delS(tid,mid){ return deleteDoc(doc(db,'tournaments',tid,'scores',mid)); },
     delT(id){ return deleteDoc(doc(db,'tournaments',id)); },
+    async getS(id){ const q=await getDocs(collection(db,'tournaments',id,'scores')); return q.docs.map(d=>d.id); },
   };
 }
 let B = null;
@@ -73,7 +81,7 @@ let B = null;
 const S = {
   list:[], listReady:false,
   tid:null, t:null, scores:{}, tab:'matches', round:0, filter:null,
-  editMatch:null, draft:null, modal:null,
+  editMatch:null, draft:null, modal:null, histFilter:'done',
 };
 let unsubs=[];
 function clearSubs(){ unsubs.forEach(u=>{try{u()}catch(e){}}); unsubs=[]; }
@@ -93,16 +101,20 @@ function openHome(){
   unsubs.push(B.subList(l=>{ S.list=l; S.listReady=true; requestRender(); }));
   render();
 }
-function openT(id){
+function openT(id, tab){
   setHash(id);
-  clearSubs(); S.tid=id; S.t=null; S.scores={}; S.tab='matches'; S.round=-1; S.editMatch=null; S.filter=null;
+  clearSubs(); S.tid=id; S.t=null; S.scores={}; S.tab=tab||'matches'; S.round=-1; S.editMatch=null; S.filter=null;
   unsubs.push(B.subT(id,t=>{ S.t=t; if(t && S.round<0){ S.round=firstOpenRound(); } if(!t){ openHome(); return; } requestRender(); }));
   unsubs.push(B.subS(id,s=>{ S.scores=s||{}; requestRender(); }));
+  unsubs.push(B.subList(l=>{ S.list=l; S.listReady=true; if(S.tab==='setup') requestRender(); }));
   render();
 }
 function setHash(id){ const want=id?'#/s/'+id:'#/'; if(location.hash!==want){ try{ history.replaceState(null,'',want); }catch(e){ location.hash=want; } } }
 function hashId(){ const m=location.hash.match(/^#\/s\/([\w-]+)/); return m?m[1]:null; }
-window.addEventListener('hashchange',()=>{ if(!B) return; const id=hashId(); if(id && id!==S.tid) openT(id); else if(!id && S.tid) openHome(); });
+function hashTab(){ const m=location.hash.match(/^#\/s\/[\w-]+\/(setup|matches|ranking)/); return m?m[1]:null; }
+function sessionLink(id,tab){ return location.origin+location.pathname+'#/s/'+id+(tab?'/'+tab:''); }
+async function copyText(text,okMsg){ try{ await navigator.clipboard.writeText(text); toast(okMsg); }catch(e){ S.modal={type:'share',text,title:'Salin link'}; render(); } }
+window.addEventListener('hashchange',()=>{ if(!B) return; const id=hashId(); if(id && id!==S.tid) openT(id, hashTab()); else if(!id && S.tid) openHome(); });
 function saveT(){ const t=S.t; if(!t) return; t.updatedAt=Date.now(); return enqueue('t/'+t.id, ()=>B.saveT(t.id,t)); }
 
 // ---------- scheduling ----------
@@ -329,7 +341,7 @@ function header(title, back){
     ${back?`<button class="icon-btn" data-act="home" aria-label="Kembali">${ICON.back}</button>`:''}
     <div class="brand grow">${back?'':'<span class="mark" aria-hidden="true"></span>'}<h1>${esc(title)}</h1></div>
     ${sync}
-    ${back?`<button class="icon-btn" data-act="share" aria-label="Bagikan hasil">${ICON.share}</button>`:''}
+    ${back?`<button class="icon-btn" data-act="copylink" aria-label="Salin link sesi" title="Salin link sesi">${ICON.link}</button>`:''}
   </div>${back?tabsHtml():''}</header>`;
 }
 function tabsHtml(){
@@ -344,22 +356,63 @@ function render(){
   const body = S.tab==='setup'?renderSetup():S.tab==='ranking'?renderRanking():renderMatches();
   $app.innerHTML = header(S.t.name||'Sesi tanpa nama', true) + `<main class="wrap">${body}</main>` + renderModal();
 }
+function pastPlayers(){
+  const cur=new Set(((S.t&&S.t.players)||[]).map(p=>(p.name||'').trim().toLowerCase()));
+  const seen={};
+  [...S.list].sort((a,b)=>(b.updatedAt||b.createdAt||0)-(a.updatedAt||a.createdAt||0)).forEach(t=>{
+    if(S.t && t.id===S.t.id) return;
+    (t.players||[]).forEach(p=>{ const nm=(p.name||'').trim(); const k=nm.toLowerCase(); if(!nm||cur.has(k)) return;
+      if(!seen[k]) seen[k]={key:k,name:nm,g:p.g==='F'?'F':'M',n:0}; seen[k].n++; });
+  });
+  return Object.values(seen).sort((a,b)=>(b.n-a.n)||a.name.localeCompare(b.name));
+}
+async function homeAction(act,id){
+  const t=S.list.find(x=>x.id===id); if(!t) return;
+  if(act==='open'){ openT(id); return; }
+  if(act==='link'){ copyText(sessionLink(id),'Link sesi disalin.'); return; }
+  if(act==='dup'){
+    const nid=uid('t'); const copy={name:(t.name||'Sesi')+' (copy)', date:todayISO(), sport:t.sport||'Tennis', mode:t.mode||'double', courts:t.courts||1, status:'ongoing',
+      players:(t.players||[]).map(p=>({id:uid('p'),name:p.name,g:p.g==='F'?'F':'M'})), matches:[], gen:0, createdAt:Date.now(), updatedAt:Date.now()};
+    if(t.host) copy.host=t.host;
+    await enqueue('t/'+nid,()=>B.saveT(nid,copy)); toast('Sesi diduplikat: '+copy.name); return;
+  }
+  if(act==='reset'){
+    if(!confirm('Reset "'+(t.name||'')+'"? Jadwal dan semua skor dihapus, daftar pemain tetap.')) return;
+    const mids=await B.getS(id).catch(()=>[]);
+    const body={...t}; delete body.id; body.matches=[]; body.gen=(t.gen||0)+1; body.status='ongoing'; delete body.scheduledPlayers; body.updatedAt=Date.now();
+    await enqueue('t/'+id,()=>B.saveT(id,body));
+    mids.forEach(mid=>enqueue('s/'+id+'/'+mid,()=>B.delS(id,mid)));
+    toast('Sesi di-reset. Buka Setup untuk mengacak jadwal baru.'); return;
+  }
+  if(act==='del'){
+    if(!confirm('Hapus sesi "'+(t.name||'')+'" beserta semua skornya?')) return;
+    const mids=await B.getS(id).catch(()=>[]);
+    mids.forEach(mid=>enqueue('s/'+id+'/'+mid,()=>B.delS(id,mid)));
+    await enqueue('t/'+id,()=>B.delT(id)); toast('Sesi dihapus.'); return;
+  }
+}
 function renderHome(){
   const list=[...S.list].sort((a,b)=>(b.date||'').localeCompare(a.date||'')||(b.createdAt||0)-(a.createdAt||0));
   const items = !S.listReady ? '<p class="empty">Memuat sesi…</p>' : list.length ? list.map(t=>{
-    const d=(t.date||'').split('-'); const done=(t.matches||[]).length;
-    return `<button class="session" data-open="${esc(t.id)}">
-      <div class="d"><b class="num">${esc(d[2]?Number(d[2]):'–')}</b><span>${d[1]?BULAN[Number(d[1])-1]:''}</span></div>
-      <div class="grow"><div style="font-weight:700">${esc(t.name||'Sesi tanpa nama')}</div>
-      <div class="small muted">${t.mode==='single'?'Single':'Double'} · ${(t.players||[]).length} pemain · ${effCourts({...t,players:t.players||[]})} court${done?' · '+done+' match':''}</div>
-      ${t.host?`<div class="small hosted">Hosted by <b>${esc(t.host)}</b></div>`:''}</div>
-      <span class="badge ${t.status==='done'?'':'live'}">${t.status==='done'?'Selesai':'Berjalan'}</span></button>`;
+    const n=(t.matches||[]).length; const ps=t.players||[];
+    return `<article class="tcard">
+      <div class="tcard-top"><h3>${esc(t.name||'Sesi tanpa nama')}</h3><span class="tdate">${ICON.cal}${esc(fmtDate(t.date))}</span></div>
+      <div class="tmeta"><span>🎾 Tennis</span><span>${t.mode==='single'?'Single':'Double'} Americano</span><span>${ps.length} pemain · ${effCourts({...t,players:ps})} court</span>${n?`<span>${n} match</span>`:''}<span class="badge ${t.status==='done'?'':'live'}">${t.status==='done'?'Selesai':'Berjalan'}</span></div>
+      ${t.host?`<div class="small hosted">Hosted by <b>${esc(t.host)}</b></div>`:''}
+      <div class="tactions">
+        <button class="tact" data-hact="link" data-id="${esc(t.id)}" aria-label="Salin link sesi" title="Salin link sesi">${ICON.ext}</button>
+        <button class="tact" data-hact="dup" data-id="${esc(t.id)}" aria-label="Duplikat sesi" title="Duplikat (setup & pemain)">${ICON.copy}</button>
+        <button class="tact" data-hact="reset" data-id="${esc(t.id)}" aria-label="Reset sesi" title="Reset (hapus jadwal & skor)">${ICON.reset}</button>
+        <button class="tact danger" data-hact="del" data-id="${esc(t.id)}" aria-label="Hapus sesi" title="Hapus sesi">${ICON.trash}</button>
+        <button class="btn enter" data-hact="open" data-id="${esc(t.id)}">Enter ${ICON.arrow}</button>
+      </div></article>`;
   }).join('') : '<div class="empty">Belum ada sesi. Buat sesi pertama untuk mulai mengacak pasangan.</div>';
   $app.innerHTML = header('Rally Board by Cholid') + `<main class="wrap">
     <section class="hero"><h2>Tennis Americano</h2><p>Acak pasangan, catat skor tiap match, dan ranking per pemain dihitung otomatis.</p></section>
-    ${Store.mode==='local'?'<div class="notice">Mode lokal: data hanya tersimpan di perangkat ini. Buka dari link claude.ai supaya bisa diisi bareng teman.</div>':''}
+    ${Store.mode==='local'?'<div class="notice">Mode lokal: data hanya tersimpan di perangkat ini.</div>':''}
     <button class="btn ball block" style="margin-top:16px;padding:14px" data-act="new">+ Buat sesi baru</button>
-    <div style="margin-top:8px">${items}</div>
+    <div class="row" style="margin-top:22px"><h2 class="grow sec-title">Sesi saya</h2><span class="small muted">${list.length} sesi</span></div>
+    <div>${items}</div>
   </main>`;
 }
 function renderSetup(){
@@ -390,6 +443,8 @@ function renderSetup(){
       <button class="btn primary" type="button" data-act="addp">Tambah</button>
     </div>
     <p class="small muted" style="margin:8px 0 0">Pilih M/F dulu, lalu ketik nama. Bisa tempel beberapa nama sekaligus (pisahkan dengan koma); semuanya memakai gender yang dipilih.</p>
+    ${(()=>{ const pp=pastPlayers(); return pp.length?`<div class="past"><div class="row"><span class="small grow" style="font-weight:600">Pemain sebelumnya · ketuk untuk menambah</span><button class="linkbtn small" data-act="addallpast">Tambah semua</button></div>
+      <div class="pastlist">${pp.map(x=>`<button class="pastchip" data-addpast="${esc(x.key)}"><span class="g ${x.g}">${x.g}</span>${esc(x.name)}</button>`).join('')}</div></div>`:''; })()}
   </section>
   ${changed?'<div class="notice">Daftar pemain berubah sejak jadwal dibuat. Acak ulang jadwal atau edit pasangan di tab Match.</div>':''}
   <button class="btn primary block" style="margin-top:14px;padding:14px" data-act="gen">${t.matches&&t.matches.length?'Acak ulang pasangan & jadwal':'Acak pasangan & buat jadwal'}</button>
@@ -471,7 +526,24 @@ function renderRanking(){
       <li>Urutan: poin, lalu jumlah menang (termasuk virtual), lalu Diff.</li>
       <li>Virtual win tidak menambah Diff.</li>
       <li>Ketuk nama pemain untuk melihat analitiknya.</li></ul></details>
-    <button class="btn primary block" style="margin-top:14px;padding:14px" data-act="share">Bagikan hasil</button>`;
+    ${matchHistory()}
+    <button class="btn primary block sharebtn" style="margin-top:14px;padding:14px" data-act="copyresult">${ICON.share}<span>Bagikan hasil</span></button>
+    <p class="small muted" style="text-align:center;margin:6px 0 0">Menyalin link ke halaman ranking sesi ini.</p>`;
+}
+function matchHistory(){
+  const t=S.t; const ms=[...(t.matches||[])].sort((a,b)=>(a.r-b.r)||(a.c-b.c)); if(!ms.length) return '';
+  const f=S.histFilter==='all'?'all':'done';
+  const list=f==='done'?ms.filter(m=>isDone(m.id)):ms;
+  const multi=effCourts(t)>1;
+  const team=ids=>ids.map(pname).map(esc).join(' / ');
+  return `<section class="hist-card"><h3>Tournament Matches</h3>
+    <div class="hist-filter"><button class="chip ${f==='all'?'on':''}" data-hist="all">Semua match</button><button class="chip ${f==='done'?'on':''}" data-hist="done">Selesai</button></div>
+    ${list.length?list.map(m=>{ const s=scoreOf(m.id), done=isDone(m.id), live=!done&&s.active;
+      return `<div class="hrow"><div class="hrow-top"><span class="muted small">Match ${ms.indexOf(m)+1} · Round ${m.r+1}${multi?' · Court '+m.c:''}</span>
+        <span class="hbadge ${done?'done':live?'live':''}">${done?'Selesai':live?'Sedang main':'Belum main'}</span></div>
+        <div class="hrow-main"><span class="ht a ${done&&s.sa>s.sb?'w':''}">${team(m.a)}</span><b class="hs num">${done?s.sa+' - '+s.sb:'vs'}</b><span class="ht b ${done&&s.sb>s.sa?'w':''}">${team(m.b)}</span></div></div>`; }).join('')
+      :'<p class="empty">Belum ada match yang selesai.</p>'}
+  </section>`;
 }
 function playerPage(r){
   const sign=v=>v>0?'+'+v:String(v);
@@ -503,11 +575,11 @@ function renderModal(){
   if(!S.modal) return '';
   if(S.modal.type==='player'){ const r=standings().find(x=>x.id===S.modal.id); return r?playerPage(r):''; }
   if(S.modal.type==='share'){
-    return `<div class="modal-bg" data-close><div class="modal" role="dialog" aria-modal="true" aria-label="Bagikan hasil" onclick="event.stopPropagation()">
-      <div class="row"><h3 class="grow">Bagikan hasil</h3><button class="icon-btn" data-close aria-label="Tutup" style="color:var(--ink)">✕</button></div>
-      <p class="small muted" style="margin:0 0 8px">Salin teks ini lalu tempel ke WhatsApp atau grup.</p>
-      <textarea class="input" readonly data-sharetext>${esc(S.modal.text)}</textarea>
-      <button class="btn primary block" style="margin-top:10px" data-act="copy">Salin teks</button></div></div>`;
+    return `<div class="modal-bg" data-close><div class="modal" role="dialog" aria-modal="true" aria-label="${esc(S.modal.title||'Bagikan')}" onclick="event.stopPropagation()">
+      <div class="row"><h3 class="grow">${esc(S.modal.title||'Bagikan')}</h3><button class="icon-btn" data-close aria-label="Tutup" style="color:var(--ink)">✕</button></div>
+      <p class="small muted" style="margin:0 0 8px">Salin lalu tempel ke WhatsApp atau grup.</p>
+      <textarea class="input" readonly data-sharetext style="min-height:90px">${esc(S.modal.text)}</textarea>
+      <button class="btn primary block" style="margin-top:10px" data-act="copy">Salin</button></div></div>`;
   }
   return '';
 }
@@ -579,6 +651,7 @@ $app.addEventListener('click', async e=>{
     const id=uid('t'); const t={name:'Sesi '+fmtDate(todayISO()), date:todayISO(), sport:'Tennis', mode:'double', courts:1, status:'ongoing', players:[], matches:[], gen:0, createdAt:Date.now()};
     await enqueue('t/'+id, ()=>B.saveT(id,t)); openT(id); S.tab='setup'; render(); return;
   }
+  if(d.hact){ await homeAction(d.hact, d.id); return; }
   if(!S.t) return;
   const t=S.t;
   if(d.act==='addp'){ addPlayers(); return; }
@@ -586,12 +659,12 @@ $app.addEventListener('click', async e=>{
   if(d.act==='addround'){ addRound(); return; }
   if(d.act==='gen'){ generate(); return; }
   if(d.act==='delT'){ if(confirm('Hapus sesi "'+(t.name||'')+'" beserta semua skornya?')){ const id=t.id; Object.keys(S.scores).forEach(mid=>enqueue('s/'+id+'/'+mid,()=>B.delS(id,mid))); await enqueue('t/'+id,()=>B.delT(id)); openHome(); } return; }
-  if(d.act==='share'){
-    const text=shareText();
-    if(navigator.share){ try{ await navigator.share({text}); return; }catch(err){ if(err&&err.name==='AbortError') return; } }
-    S.modal={type:'share',text}; render(); return;
-  }
-  if(d.act==='copy'){ const ta=document.querySelector('[data-sharetext]'); try{ await navigator.clipboard.writeText(ta.value); toast('Teks disalin.'); }catch(err){ ta.select(); try{document.execCommand('copy');toast('Teks disalin.');}catch(x){toast('Pilih teks lalu salin manual.');} } return; }
+  if(d.act==='copylink'){ copyText(sessionLink(t.id),'Link sesi disalin.'); return; }
+  if(d.act==='copyresult'){ copyText(sessionLink(t.id,'ranking'),'Link hasil (ranking) disalin.'); return; }
+  if(d.hist){ S.histFilter=d.hist; render(); return; }
+  if(d.addpast){ const pp=pastPlayers().find(x=>x.key===d.addpast); if(pp){ t.players.push({id:uid('p'),name:pp.name,g:pp.g}); saveT(); render(); } return; }
+  if(d.act==='addallpast'){ const pp=pastPlayers(); if(pp.length){ pp.forEach(x=>t.players.push({id:uid('p'),name:x.name,g:x.g})); saveT(); render(); toast(pp.length+' pemain ditambahkan.'); } return; }
+  if(d.act==='copy'){ const ta=document.querySelector('[data-sharetext]'); try{ await navigator.clipboard.writeText(ta.value); toast('Disalin.'); S.modal=null; render(); }catch(err){ ta.select(); try{document.execCommand('copy');toast('Disalin.');}catch(x){toast('Pilih teks lalu salin manual.');} } return; }
   if(d.mode){ if(t.mode!==d.mode){ t.mode=d.mode; saveT(); render(); if(t.matches&&t.matches.length) toast('Format berubah. Acak ulang jadwal supaya berlaku.'); } return; }
   if(d.status){ t.status=d.status; saveT(); render(); return; }
   if(d.gender){ const p=t.players.find(x=>x.id===d.gender); if(p){ p.g=p.g==='F'?'M':'F'; saveT(); render(); } return; }
@@ -659,5 +732,5 @@ render();
     try{ const fb=initializeApp(firebaseConfig); B=FirebaseBackend(getFirestore(fb)); Store.mode='shared'; }
     catch(e){ console.error(e); B=Local; Store.mode='local'; toast('Gagal terhubung ke Firebase, pakai mode lokal.'); }
   } else { B=Local; Store.mode='local'; console.warn('firebase-config.js belum diisi: memakai mode lokal.'); }
-  const id=hashId(); if(id) openT(id); else openHome();
+  const id=hashId(); if(id) openT(id, hashTab()); else openHome();
 })();
