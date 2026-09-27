@@ -117,12 +117,26 @@ function circleRounds(ids){
   }
   return out;
 }
+// ---- aturan M/F: MM vs FF dilarang, komposisi seimbang diutamakan ----
+let GMAP={};                                   // id -> 'M'|'F', diisi sebelum menjadwalkan
+const fOf=team=>team.reduce((n,i)=>n+(GMAP[i]==='F'?1:0),0);
+const gHard=(A,B)=>A.length===2 && Math.abs(fOf(A)-fOf(B))>=2 ? 1 : 0;   // MM vs FF
+const gSoft=(A,B)=>A.length===2 && Math.abs(fOf(A)-fOf(B))===1 ? 1 : 0;  // mis. MF vs MM
 function buildMatches(ids, mode){
   const rounds=circleRounds(shuffle(ids)).map(r=>shuffle(r));
   const ms=[];
   if(mode==='single'){ rounds.forEach(r=>r.forEach(([a,b])=>ms.push({a:[a],b:[b]}))); return {ms,dropped:0}; }
   const pool=[];
-  rounds.forEach(r=>{ for(let i=0;i+1<r.length;i+=2) ms.push({a:r[i],b:r[i+1]}); if(r.length%2) pool.push(r[r.length-1]); });
+  rounds.forEach(r=>{
+    const left=[...r];
+    // pasangkan tim-tim di round ini dengan komposisi M/F paling seimbang
+    while(left.length>=2){
+      const A=left.shift(); let bi=0, bs=1e9;
+      left.forEach((B,i)=>{ const sc=gHard(A,B)*100+gSoft(A,B)*10+Math.random(); if(sc<bs){bs=sc;bi=i;} });
+      ms.push({a:A,b:left.splice(bi,1)[0]});
+    }
+    if(left.length) pool.push(left[0]);
+  });
   // pair leftover partnerships that share no player
   let dropped=0;
   while(pool.length){
@@ -159,12 +173,16 @@ const gcd=(a,b)=>b?gcd(b,a%b):a;
 function fullRoundMatches(n){ const base=Math.ceil(n*(n-1)/4); const step=n/gcd(n,4); return Math.ceil(base/step)*step; }
 // Pengacak adil: pilih pemain yang paling sedikit main, lalu paling lama istirahat,
 // lalu bagi tim dengan menghindari pasangan/lawan yang berulang.
-function greedySchedule(ids, M, courts, size){
+function greedySchedule(ids, M, courts, size, prior){
   const cnt={}, last={}, pc={}, oc={}; ids.forEach(i=>{cnt[i]=0; last[i]=-1;});
   const k=(a,b)=>a<b?a+'|'+b:b+'|'+a, g=(o,a,b)=>o[k(a,b)]||0, inc=(o,a,b)=>{o[k(a,b)]=(o[k(a,b)]||0)+1;};
+  // lanjutkan dari jadwal yang sudah ada (untuk tombol tambah round)
+  let r0=0;
+  (prior||[]).forEach(m=>{ [...m.a,...m.b].forEach(i=>{ if(i in cnt){ cnt[i]++; last[i]=Math.max(last[i],m.r); } });
+    if(size===4){ inc(pc,m.a[0],m.a[1]); inc(pc,m.b[0],m.b[1]); } m.a.forEach(a=>m.b.forEach(b=>inc(oc,a,b))); r0=Math.max(r0,m.r+1); });
   const combos=(arr,r)=>{ const out=[]; const f=(st,acc)=>{ if(acc.length===r){out.push(acc);return;} for(let i=st;i<arr.length;i++) f(i+1,[...acc,arr[i]]); }; f(0,[]); return out; };
   const splits=q=>size===2?[[[q[0]],[q[1]]]]:[[[q[0],q[1]],[q[2],q[3]]],[[q[0],q[2]],[q[1],q[3]]],[[q[0],q[3]],[q[1],q[2]]]];
-  const out=[]; let made=0, r=0;
+  const out=[]; let made=0, r=r0;
   while(made<M){
     const used=new Set(); const per=Math.min(courts, M-made);
     for(let c=0;c<per;c++){
@@ -175,7 +193,7 @@ function greedySchedule(ids, M, courts, size){
         for(const [A,Bt] of splits(q)){
           const partner=size===2?0:g(pc,A[0],A[1])+g(pc,Bt[0],Bt[1]);
           const opp=A.reduce((s2,a)=>s2+Bt.reduce((t2,b)=>t2+g(oc,a,b),0),0);
-          const score=load*1e6 + partner*1e4 + opp*100 + rest + Math.random();
+          const score=load*1e8 + gHard(A,Bt)*1e7 + gSoft(A,Bt)*3e4 + partner*1e4 + opp*100 + rest + Math.random();
           if(!best||score<best.score) best={score,A,B:Bt};
         }
       }
@@ -190,16 +208,18 @@ function greedySchedule(ids, M, courts, size){
 }
 function rateSchedule(sch, ids, mode){
   const cnt={}; ids.forEach(i=>cnt[i]=0); let maxGap=0; const R=sch.reduce((x,m)=>Math.max(x,m.r+1),0);
-  const pairs={}, key=(a,b)=>a<b?a+'|'+b:b+'|'+a;
-  for(let r=0;r<R;r++){ sch.filter(m=>m.r===r).forEach(m=>{ [...m.a,...m.b].forEach(p=>cnt[p]++);
+  const pairs={}, key=(a,b)=>a<b?a+'|'+b:b+'|'+a; let hard=0, soft=0;
+  for(let r=0;r<R;r++){ sch.filter(m=>m.r===r).forEach(m=>{ [...m.a,...m.b].forEach(p=>cnt[p]++); hard+=gHard(m.a,m.b); soft+=gSoft(m.a,m.b);
       const pr = mode==='single' ? [[m.a[0],m.b[0]]] : [m.a,m.b];
       pr.forEach(([x,y])=>{ const kk=key(x,y); pairs[kk]=(pairs[kk]||0)+1; }); });
     const v=Object.values(cnt); maxGap=Math.max(maxGap, Math.max(...v)-Math.min(...v)); }
   const n=ids.length, missing=n*(n-1)/2-Object.keys(pairs).length;
   const repeats=Object.values(pairs).reduce((s2,x)=>s2+(x-1),0);
-  return [maxGap>1?1:0, missing, repeats, maxGap, R];
+  return [hard, maxGap>1?1:0, missing, soft, repeats, maxGap, R];
 }
+function setGMap(){ GMAP={}; ((S.t&&S.t.players)||[]).forEach(p=>GMAP[p.id]=p.g==='F'?'F':'M'); }
 function makeSchedule(ids, mode, courts){
+  setGMap();
   const n=ids.length, size=mode==='single'?2:4, cands=[];
   if(mode==='single' || n%4===0 || n%4===1){ const {ms}=buildMatches(ids,mode); cands.push(scheduleRounds(ms,courts,ids)); }
   const M = mode==='single' ? n*(n-1)/2 : fullRoundMatches(n);
@@ -209,6 +229,46 @@ function makeSchedule(ids, mode, courts){
   const less=(x,y)=>{ for(let i=0;i<x.length;i++){ if(x[i]!==y[i]) return x[i]<y[i]; } return false; };
   for(const c of cands){ const k=rateSchedule(c,ids,mode); if(!best||less(k,best.k)) best={c,k}; }
   return best.c;
+}
+// susun ulang round saat jumlah court berubah (pasangan & skor tetap).
+// Round yang sudah ada skornya dibiarkan apa adanya; hanya sisa jadwal yang dipadatkan ulang.
+function repackRounds(matches, courts){
+  const sorted=[...matches].sort((a,b)=>(a.r-b.r)||(a.c-b.c));
+  const lastDone=sorted.reduce((x,m)=>isDone(m.id)?Math.max(x,m.r):x,-1);
+  const keep=sorted.filter(m=>m.r<=lastDone), rest=sorted.filter(m=>m.r>lastDone);
+  const out=keep.map(m=>({...m})); let r=lastDone+1;
+  while(rest.length){
+    const used=new Set(); let c=0;
+    for(let i=0;i<rest.length && c<courts;){
+      const m=rest[i], ps=[...m.a,...m.b];
+      if(ps.some(p=>used.has(p))){ i++; continue; }
+      ps.forEach(p=>used.add(p)); out.push({...m,r,c:++c}); rest.splice(i,1);
+    }
+    r++;
+  }
+  return out;
+}
+function effCourts(t){ const need=t.mode==='single'?2:4; return Math.max(1,Math.min(Number(t.courts)||1, Math.floor(t.players.length/need)||1)); }
+function addRound(){
+  const t=S.t; const ids=t.players.map(p=>p.id); const size=t.mode==='single'?2:4;
+  if(ids.length<size){ toast('Pemain belum cukup.'); return; }
+  setGMap();
+  const courts=Math.min(effCourts(t), Math.floor(ids.length/size));
+  const prior=(t.matches||[]).filter(m=>[...m.a,...m.b].every(p=>ids.includes(p)));
+  let best=null;
+  for(let i=0;i<40;i++){
+    const add=greedySchedule(shuffle(ids), courts, courts, size, prior);
+    const k2=(a,b)=>a<b?a+'|'+b:b+'|'+a; const seen={};
+    prior.forEach(m=>{ if(size===4){ seen[k2(...m.a)]=(seen[k2(...m.a)]||0)+1; seen[k2(...m.b)]=(seen[k2(...m.b)]||0)+1; } else { seen[k2(m.a[0],m.b[0])]=(seen[k2(m.a[0],m.b[0])]||0)+1; } });
+    const rep2=add.reduce((n,m)=> n + (size===4 ? (seen[k2(...m.a)]||0)+(seen[k2(...m.b)]||0) : (seen[k2(m.a[0],m.b[0])]||0)),0);
+    const key=[add.reduce((n,m)=>n+gHard(m.a,m.b),0), add.reduce((n,m)=>n+gSoft(m.a,m.b),0), rep2];
+    if(!best||key[0]<best.k[0]||(key[0]===best.k[0]&&(key[1]<best.k[1]||(key[1]===best.k[1]&&key[2]<best.k[2])))) best={add,k:key};
+  }
+  const R=(t.matches||[]).reduce((x,m)=>Math.max(x,m.r+1),0); const gen=t.gen||1; const base=(t.matches||[]).length;
+  const add=best.add.map((m,i)=>({...m, r:R, id:'g'+gen+'x'+Date.now().toString(36)+i}));
+  t.matches=[...(t.matches||[]), ...add];
+  S.round=R; S.filter=null; saveT(); render();
+  toast('Round '+(R+1)+' ditambahkan ('+add.length+' match).');
 }
 // round-round di mana semua pemain sudah main sama banyak (titik aman untuk berhenti)
 function balancedRounds(t){
@@ -278,7 +338,7 @@ function tabsHtml(){
 }
 function render(){
   pending=false;
-  if(Store.mode==='loading'){ $app.innerHTML=header('Rally Board')+'<div class="wrap"><p class="empty">Menyiapkan…</p></div>'; return; }
+  if(Store.mode==='loading'){ $app.innerHTML=header('Rally Board by Cholid')+'<div class="wrap"><p class="empty">Menyiapkan…</p></div>'; return; }
   if(!S.tid) return renderHome();
   if(!S.t){ $app.innerHTML=header('Memuat…',true)+'<div class="wrap"><p class="empty">Memuat sesi…</p></div>'; return; }
   const body = S.tab==='setup'?renderSetup():S.tab==='ranking'?renderRanking():renderMatches();
@@ -291,10 +351,11 @@ function renderHome(){
     return `<button class="session" data-open="${esc(t.id)}">
       <div class="d"><b class="num">${esc(d[2]?Number(d[2]):'–')}</b><span>${d[1]?BULAN[Number(d[1])-1]:''}</span></div>
       <div class="grow"><div style="font-weight:700">${esc(t.name||'Sesi tanpa nama')}</div>
-      <div class="small muted">${t.mode==='single'?'Single':'Double'} · ${(t.players||[]).length} pemain · ${t.courts||1} court${done?' · '+done+' match':''}</div></div>
+      <div class="small muted">${t.mode==='single'?'Single':'Double'} · ${(t.players||[]).length} pemain · ${effCourts({...t,players:t.players||[]})} court${done?' · '+done+' match':''}</div>
+      ${t.host?`<div class="small hosted">Hosted by <b>${esc(t.host)}</b></div>`:''}</div>
       <span class="badge ${t.status==='done'?'':'live'}">${t.status==='done'?'Selesai':'Berjalan'}</span></button>`;
   }).join('') : '<div class="empty">Belum ada sesi. Buat sesi pertama untuk mulai mengacak pasangan.</div>';
-  $app.innerHTML = header('Rally Board') + `<main class="wrap">
+  $app.innerHTML = header('Rally Board by Cholid') + `<main class="wrap">
     <section class="hero"><h2>Tennis Americano</h2><p>Acak pasangan, catat skor tiap match, dan ranking per pemain dihitung otomatis.</p></section>
     ${Store.mode==='local'?'<div class="notice">Mode lokal: data hanya tersimpan di perangkat ini. Buka dari link claude.ai supaya bisa diisi bareng teman.</div>':''}
     <button class="btn ball block" style="margin-top:16px;padding:14px" data-act="new">+ Buat sesi baru</button>
@@ -307,6 +368,7 @@ function renderSetup(){
   return `
   <section class="card">
     <label class="field"><span>Nama sesi</span><input class="input" data-f="name" value="${esc(t.name)}" placeholder="mis. Ultradome, 27 Sep"></label>
+    <label class="field"><span>Nama host</span><input class="input" data-f="host" value="${esc(t.host||'')}" placeholder="mis. Cholid" maxlength="60"></label>
     <div class="grid2">
       <label class="field"><span>Tanggal</span><input class="input" type="date" data-f="date" value="${esc(t.date)}"></label>
       <label class="field"><span>Jumlah court</span><input class="input" type="number" min="1" max="10" inputmode="numeric" data-f="courts" value="${esc(t.courts)}"></label>
@@ -324,9 +386,10 @@ function renderSetup(){
       <button class="del" data-delp="${esc(p.id)}" aria-label="Hapus ${esc(p.name)}">${ICON.trash}</button></div>`).join('')}
     <div class="row" style="margin-top:10px">
       <input class="input grow" data-newp placeholder="Nama pemain baru" autocomplete="off" enterkeyhint="done">
+      <div class="seg newg" role="group" aria-label="Gender pemain baru"><button type="button" data-newg="M" aria-pressed="${S.newG!=='F'}">M</button><button type="button" data-newg="F" aria-pressed="${S.newG==='F'}">F</button></div>
       <button class="btn primary" type="button" data-act="addp">Tambah</button>
     </div>
-    <p class="small muted" style="margin:8px 0 0">Bisa tempel beberapa nama sekaligus, pisahkan dengan koma.</p>
+    <p class="small muted" style="margin:8px 0 0">Pilih M/F dulu, lalu ketik nama. Bisa tempel beberapa nama sekaligus (pisahkan dengan koma); semuanya memakai gender yang dipilih.</p>
   </section>
   ${changed?'<div class="notice">Daftar pemain berubah sejak jadwal dibuat. Acak ulang jadwal atau edit pasangan di tab Match.</div>':''}
   <button class="btn primary block" style="margin-top:14px;padding:14px" data-act="gen">${t.matches&&t.matches.length?'Acak ulang pasangan & jadwal':'Acak pasangan & buat jadwal'}</button>
@@ -381,7 +444,8 @@ function renderMatches(){
       <div class="roundtitle"><b>Round ${S.round+1}/${rs.length}</b><div class="dots" aria-hidden="true">${dots}</div><div class="balnote ${bal.has(S.round)?'ok':''}">${balNote}</div></div>
       <button class="btn" data-rnd="1" ${S.round>=rs.length-1?'disabled':''} aria-label="Round berikutnya">${ICON.next}</button></div>
     ${cur.map(m=>matchCard(m, ms.indexOf(m)+1)).join('')}
-    ${bench.length?`<section class="bench"><h3>Tidak main di round ini (${bench.length})</h3><div class="names">${bench.map(p=>`<span class="pill">${esc(p.name||'Tanpa nama')}</span>`).join('')}</div></section>`:''}`;
+    ${bench.length?`<section class="bench"><h3>Tidak main di round ini (${bench.length})</h3><div class="names">${bench.map(p=>`<span class="pill">${esc(p.name||'Tanpa nama')}</span>`).join('')}</div></section>`:''}
+    ${S.round===rs.length-1?`<button class="btn block addround" data-act="addround">+ Tambah round (${effCourts(t)} court)</button><p class="small muted" style="text-align:center;margin:6px 0 0">Pemain yang paling sedikit main didahulukan.</p>`:''}`;
 }
 function renderRanking(){
   const t=S.t; const st=standings(); const ms=t.matches||[]; const done=ms.filter(m=>isDone(m.id)).length;
@@ -391,7 +455,7 @@ function renderRanking(){
   return `<section class="leader"><span class="ballshape" aria-hidden="true"></span>
       <small>${finished||t.status==='done'?'Juara '+esc(t.name||''):'Memimpin sementara'}</small>
       <strong>${anyPlayed?esc(top.name):'Belum ada skor'}</strong>
-      <div class="meta">${done}/${ms.length} match selesai · ${esc(fmtDate(t.date))}</div></section>
+      <div class="meta">${done}/${ms.length} match selesai · ${esc(fmtDate(t.date))}${t.host?' · Hosted by '+esc(t.host):''}</div></section>
     <div class="table-wrap"><table>
       <thead><tr><th>#</th><th>Pemain</th><th>W-L-T</th><th>Diff</th><th>Poin</th></tr></thead>
       <tbody>${st.map((r,i)=>`<tr class="${i===0&&anyPlayed?'first':''}"><td>${i===0&&anyPlayed?'🏅':i+1}</td>
@@ -450,7 +514,7 @@ function renderModal(){
 function shareText(){
   const t=S.t, st=standings(), ms=t.matches||[], done=ms.filter(m=>isDone(m.id)).length;
   const sign=v=>v>0?'+'+v:String(v);
-  let s=`🎾 ${t.name||'Sesi tennis'} (${fmtDate(t.date)})\n${t.mode==='single'?'Single':'Double'} Americano · ${done}/${ms.length} match selesai\n\n`;
+  let s=`🎾 ${t.name||'Sesi tennis'} (${fmtDate(t.date)})\n${t.mode==='single'?'Single':'Double'} Americano · ${done}/${ms.length} match selesai${t.host?'\nHosted by '+t.host:''}\n\n`;
   st.forEach((r,i)=>{ s+=`${i+1}. ${r.name}${r.V?' (⭐+'+r.V+')':''} — ${r.W}-${r.L}-${r.T}, diff ${sign(r.diff)}, ${Math.round(r.pts)} poin\n`; });
   return s.trim();
 }
@@ -518,6 +582,8 @@ $app.addEventListener('click', async e=>{
   if(!S.t) return;
   const t=S.t;
   if(d.act==='addp'){ addPlayers(); return; }
+  if(d.newg){ S.newG=d.newg; render(); const i=document.querySelector('[data-newp]'); if(i) i.focus(); return; }
+  if(d.act==='addround'){ addRound(); return; }
   if(d.act==='gen'){ generate(); return; }
   if(d.act==='delT'){ if(confirm('Hapus sesi "'+(t.name||'')+'" beserta semua skornya?')){ const id=t.id; Object.keys(S.scores).forEach(mid=>enqueue('s/'+id+'/'+mid,()=>B.delS(id,mid))); await enqueue('t/'+id,()=>B.delT(id)); openHome(); } return; }
   if(d.act==='share'){
@@ -560,7 +626,12 @@ $app.addEventListener('click', async e=>{
 });
 $app.addEventListener('change', e=>{
   const el=e.target; if(!S.t) return; const t=S.t;
-  if(el.dataset.f){ const k=el.dataset.f; let v=el.value; if(k==='courts'){ v=Math.max(1,Math.min(10,parseInt(v,10)||1)); } if(t[k]!==v){ t[k]=v; saveT(); requestRender(); } return; }
+  if(el.dataset.f){ const k=el.dataset.f; let v=el.value; if(k==='courts'){ v=Math.max(1,Math.min(10,parseInt(v,10)||1)); const need=t.mode==='single'?2:4; const mx=Math.floor(t.players.length/need); if(mx>=1 && v>mx){ toast('Maksimal '+mx+' court untuk '+t.players.length+' pemain.'); v=mx; el.value=v; } } if(k==='host') v=v.trim().slice(0,60);
+    if(k==='host' && !v){ if('host' in t){ delete t.host; saveT(); requestRender(); } return; }
+    if(t[k]!==v){ t[k]=v;
+      if(k==='courts' && t.matches && t.matches.length){ const c=effCourts(t); t.matches=repackRounds(t.matches,c); S.round=firstOpenRound(); toast('Jadwal disusun ulang untuk '+c+' court. Skor tetap aman.'+(c<v?' (maks. '+c+' court untuk '+t.players.length+' pemain)':'')); }
+      saveT(); requestRender(); }
+    return; }
   if(el.dataset.pname){ const p=t.players.find(x=>x.id===el.dataset.pname); const v=el.value.trim(); if(p && p.name!==v){ p.name=v; saveT(); requestRender(); } return; }
   if(el.dataset.slot){ const k=el.dataset.slot[0], i=Number(el.dataset.slot.slice(1)); S.draft[k][i]=el.value; return; }
 });
@@ -573,7 +644,7 @@ function addPlayers(){
   const inp=document.querySelector('[data-newp]'); if(!inp||!S.t) return;
   const names=inp.value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);
   if(!names.length){ toast('Ketik nama pemain dulu.'); inp.focus(); return; }
-  names.forEach(n=>S.t.players.push({id:uid('p'),name:n,g:'M'}));
+  names.forEach(n=>S.t.players.push({id:uid('p'),name:n,g:S.newG==='F'?'F':'M'}));
   inp.value=''; saveT(); render();
   const again=document.querySelector('[data-newp]'); if(again) again.focus();
 }
